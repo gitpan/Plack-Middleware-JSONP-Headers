@@ -1,7 +1,7 @@
 
 
 This archive contains the distribution Plack-Middleware-JSONP-Headers,
-version 0.1:
+version 0.11:
 
   Wraps JSON response with HTTP headers in JSONP
 

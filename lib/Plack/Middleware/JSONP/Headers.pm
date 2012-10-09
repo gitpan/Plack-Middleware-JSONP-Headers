@@ -1,6 +1,6 @@
 package Plack::Middleware::JSONP::Headers;
 {
-  $Plack::Middleware::JSONP::Headers::VERSION = '0.1';
+  $Plack::Middleware::JSONP::Headers::VERSION = '0.11';
 }
 #ABSTRACT: Wraps JSON response with HTTP headers in JSONP
 use strict;
@@ -13,7 +13,7 @@ use URI::Escape ();
 use JSON ();
 use Scalar::Util 'reftype';
 use HTTP::Headers ();
-use Plack::Util::Accessor qw/callback_key headers/;
+use Plack::Util::Accessor qw(callback_key headers template);
 
 sub prepare_app {
     my $self = shift;
@@ -21,67 +21,69 @@ sub prepare_app {
     unless (defined $self->callback_key) {
         $self->callback_key('callback');
     }
-	
-	unless (defined $self->headers) {
-		$self->headers( sub { 1 } );
-	}
+    
+    unless (defined $self->headers) {
+        $self->headers( sub { 1 } );
+    }
 
-	my $reftype = reftype $self->headers;
-	unless ($reftype eq 'CODE') {
-		my $headers = $self->headers;
- 		if ($reftype eq 'REGEXP') {
-			$self->headers( sub { $_[0] =~ $headers; } );
-		} elsif ($reftype eq 'ARRAY') {
-			$self->headers( sub { grep { $_[0] eq $_ } @$headers } );
-		} else {
-			die "headers must be code, array, or regexp";
-		}
-	}
+    unless (reftype $self->headers eq 'CODE') {
+        my $headers = $self->headers;
+        if (ref $self->headers eq ref qr//) {
+            $self->headers( sub { $_[0] =~ $headers; } );
+        } elsif (reftype $self->headers eq 'ARRAY') {
+            $self->headers( sub { grep { $_[0] eq $_ } @$headers } );
+        } else {
+            die "headers must be code, array, or regexp";
+        }
+    }
+
+    unless ($self->template) {
+        $self->template('{ "meta": %s, "data": %s }')
+    }
 }
 
 sub wrap_json {
-	my ($self, $status, $headers, $data) = @_;
+    my ($self, $status, $headers, $data) = @_;
 
-	my $meta = { status => $status }; 
-	my @links;
+    my $meta = { status => $status }; 
+    my @links;
 
-	$headers->iter(	sub {
-		my ($key, $value) = @_;
-		return unless $self->headers->($key, $value);
-		if ($key eq 'Link') {
-			push @{$meta->{'Link'}}, $self->parse_link_header( $value );
-		} else {
-			$meta->{$key} = $value; # just ignores repeatable headers
-		}
-	});
-	
-	$meta->{Link} = \@links if @links;
-	$meta = JSON->new->encode( $meta );
+    $headers->iter(    sub {
+        my ($key, $value) = @_;
+        return unless $self->headers->($key, $value);
+        if ($key eq 'Link') {
+            push @{$meta->{'Link'}}, $self->parse_link_header( $value );
+        } else {
+            $meta->{$key} = $value; # just ignores repeatable headers
+        }
+    });
+    
+    $meta->{Link} = \@links if @links;
+    $meta = JSON->new->encode( $meta );
 
-	# TODO: configure this via template (?)
-	return "{ \"meta\": $meta, \"data\": $data}";
+    sprintf $self->template, $meta, $data;
 }
 
 sub parse_link_header {
-	my ($self, $link) = @_;
+    my ($self, $link) = @_;
 
-	my @links;
+    my @links;
 
-	while( $link =~ /^(\s*<([^>]*)>\s*[;,]?\s*)/) {
-		my $url = $2;
-		$link = substr($link, length($1));
-		my %attr = ();
-		while ($link =~ /^((\/|[a-z0-9-]+\*?)\s*\=\s*("[^"]*"|[^\s\"\;\,]+)\s*[;,]?\s*)/i) {
-			$link = substr($link, length($1));
-			my $key = lc $2;
-			my $val = $3;
-			$val =~ s/(^"|"$)//g if ($val =~ /^".*"$/);
-			$attr{$key} = $val;
-		}
-		push @links, [ $url, \%attr ];
-	}
+    while( $link =~ /^(\s*<([^>]*)>\s*[;,]?\s*)/) {
+        my $url = $2;
+        $link = substr($link, length($1));
+        my %attr = ();
+        while ($link =~ /^((\/|[a-z0-9-]+\*?)\s*\=\s*("[^"]*"|[^\s\"\;\,]+)\s*[;,]?\s*)/i) {
+            $link = substr($link, length($1));
+            my $key = lc $2;
+            my $val = $3;
+            $val =~ s/(^"|"$)//g if ($val =~ /^".*"$/);
+            $attr{$key} = $val;
+        }
+        push @links, [ $url, \%attr ];
+    }
 
-	return @links;
+    return @links;
 }
 
 # Most of this method is copied from Plack::Middleware::JSONP. 
@@ -100,9 +102,9 @@ sub call {
                 if ($cb =~ /^[\w\.\[\]]+$/) {
                     my $body;
                     Plack::Util::foreach($res->[2], sub { $body .= $_[0] });
-  				  
-					# this line added
-				  	$body = $self->wrap_json( $res->[0], $h, $body );
+                    
+                    # this line added
+                      $body = $self->wrap_json( $res->[0], $h, $body );
 
                     my $jsonp = "$cb($body)";
                     $res->[2] = [ $jsonp ];
@@ -127,13 +129,14 @@ Plack::Middleware::JSONP::Headers - Wraps JSON response with HTTP headers in JSO
 
 =head1 VERSION
 
-version 0.1
+version 0.11
 
 =head1 SYNOPSIS
 
     enable "JSONP::Headers", 
-		callback_key => 'jsonp',
-		headers 	 => qr/^(X-|Link$)/;
+        callback_key => 'callback',
+        headers      => qr/^(X-|Link$)/,
+        template     => '{ "meta": %s, "data": %s }';
 
 =head1 DESCRIPTION
 
@@ -147,10 +150,10 @@ with query parameter C<callback> set to C<doz> is wrapped to
 
     doz({ 
       "meta": { 
-	    "status": 200, 
-		"Content-Type": "application/javascript"
-	  }, 
-	  "data": { "foo": "bar" }
+        "status": 200, 
+        "Content-Type": "application/javascript"
+      }, 
+      "data": { "foo": "bar" }
     })
 
 The HTTP headers to be wrapped can be configured. All header values are
@@ -174,6 +177,12 @@ Callback query parameter. Set to C<callback> by default.
 List of HTTP headers or regular expression of headers to add to the response.
 One can alternatively pass a code reference that gets each header as key-value
 pair. By default all headers are wrapped.
+
+=item template
+
+String template for C<sprintf> to construct the JSON response from HTTP headers
+(first) and original response (second). Set to C<{ "meta": %s, "data": %s }> by
+default.
 
 =back
 
